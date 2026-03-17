@@ -1,0 +1,68 @@
+[graph]
+# Run checks against all targets in the dependency graph.
+targets = []
+
+# ---------------------------------------------------------------------------
+# Advisories – maps to cargo-audit's advisory database (RustSec)
+# ---------------------------------------------------------------------------
+[advisories]
+# Deny crates with known security vulnerabilities.
+version = 2
+ignore = []
+
+# ---------------------------------------------------------------------------
+# Licenses
+# ---------------------------------------------------------------------------
+[licenses]
+version = 2
+# Minimum confidence required to accept an SPDX expression inferred from
+# a LICENSE file rather than declared in Cargo.toml.
+confidence-threshold = 0.8
+# Allow all licenses that appear in the current dependency tree.
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "LGPL-2.1-or-later",
+    "OpenSSL",
+    "Unicode-3.0",
+    "Unlicense",
+]
+
+# ---------------------------------------------------------------------------
+# Bans – duplicate crates, yanked crates, explicit deny-list
+# ---------------------------------------------------------------------------
+[bans]
+# Warn when the same crate appears at multiple versions (common with big
+# ecosystems; escalate to "deny" once the tree is stable).
+multiple-versions = "warn"
+# Deny wildcard version requirements.
+wildcards = "deny"
+# Highlight the longest path from a root to the duplicated crate.
+highlight = "all"
+# Crates that are allowed despite being on the deny-list.
+allow = []
+# Crates that must never appear in the dependency graph.
+deny = []
+# Crate versions to skip when checking for duplicates.
+skip = []
+# Like `skip`, but also skips the listed crate's entire sub-tree.
+skip-tree = []
+
+# ---------------------------------------------------------------------------
+# Sources – registries and git repositories
+# ---------------------------------------------------------------------------
+[sources]
+# Deny crates from unknown registries.
+unknown-registry = "deny"
+# Deny crates fetched directly from unknown git repositories.
+unknown-git = "deny"
+# Only allow dependencies from crates.io.
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

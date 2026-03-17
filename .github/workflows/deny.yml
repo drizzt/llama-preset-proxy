@@ -1,0 +1,39 @@
+name: Cargo Deny
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'deny.toml'
+  pull_request:
+    branches: [ master ]
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'deny.toml'
+  schedule:
+    - cron: '0 0 * * *' # Daily at 00:00 UTC (advisories DB refresh)
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  deny:
+    name: Cargo Deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Check licenses, bans, advisories and sources
+        uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2.0.20
+        with:
+          command: check
+          arguments: --all-features
+          manifest-path: Cargo.toml

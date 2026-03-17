@@ -1,0 +1,45 @@
+[Unit]
+Description=llama.cpp preset-injection proxy
+Documentation=https://github.com/drizzt/llama-preset-proxy
+# Start after the network is up; if the backend runs on the same host as its own
+# unit, add it here (e.g. After=llama-server.service). The proxy tolerates a
+# backend that is not yet reachable at boot and retries in the background.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/llama-preset-proxy
+# All configuration goes through LPP_* environment variables. Create the file
+# below with e.g.:
+#   LPP_LISTEN_HOST=127.0.0.1
+#   LPP_LISTEN_PORT=8081
+#   LPP_BACKEND_URL=http://127.0.0.1:8080/v1
+#   LPP_MAX_CONCURRENT=256
+EnvironmentFile=/etc/llama-preset-proxy.env
+Restart=on-failure
+RestartSec=2s
+
+# --- Hardening -------------------------------------------------------------
+# Run as a transient unprivileged user; no on-disk account needed.
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+# Network-only service: deny every other address family.
+RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

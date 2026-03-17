@@ -1,0 +1,28 @@
+[package]
+name = "llama-preset-proxy"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+description = "HTTP proxy that injects llama.cpp preset params and reroutes requests to avoid model reloads"
+repository = "https://github.com/drizzt/llama-preset-proxy"
+readme = "README.md"
+keywords = ["llama", "llamacpp", "proxy", "llm", "openai"]
+categories = ["command-line-utilities", "web-programming::http-server"]
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
+[dependencies]
+pest = "2"
+pest_derive = "2"
+percent-encoding = "2.3"
+axum = "0.8.8"
+tokio = { version = "1.50", features = ["full"] }
+reqwest = { version = "0.13", features = ["json", "stream"] }
+serde_json = "1.0"
+clap = { version = "4.6", features = ["derive", "env"] }
+futures = "0.3"
+tower-http = { version = "0.7", features = ["timeout", "trace", "catch-panic"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

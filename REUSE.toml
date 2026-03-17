@@ -1,0 +1,23 @@
+version = 1
+SPDX-PackageName = "llama-preset-proxy"
+SPDX-PackageSupplier = "Timothy Redaelli <timothy.redaelli@gmail.com>"
+
+# Source files (src/*.rs, src/ini.pest) carry their own inline SPDX headers.
+# Everything else without a header-friendly home is annotated centrally here.
+[[annotations]]
+path = [
+  "Cargo.toml",
+  "Cargo.lock",
+  "README.md",
+  "SECURITY.md",
+  "LICENSE",
+  ".gitignore",
+  "deny.toml",
+  "Containerfile",
+  "packaging/llama-preset-proxy.service",
+  ".github/dependabot.yml",
+  ".github/workflows/*.yml",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Timothy Redaelli <timothy.redaelli@gmail.com>"
+SPDX-License-Identifier = "MIT"

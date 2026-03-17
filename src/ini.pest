@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Timothy Redaelli
+
+// Grammar translated 1:1 from the C++ PEG parser in llama.cpp/common/preset.cpp
+
+newline      = _{ "\r\n" | "\n" | "\r" }
+ws           = _{ (" " | "\t")* }
+comment      = _{ (";" | "#") ~ (!newline ~ ANY)* }
+eol          = _{ ws ~ comment? ~ (newline | EOI) }
+
+ident        = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "." | "-")* }
+
+// eol_start = ws followed by a comment marker, newline, or end of input.
+// Used as a negative lookahead to stop value parsing before trailing comments.
+eol_start    = _{ ws ~ (";" | "#" | newline | EOI) }
+value        = @{ (!eol_start ~ ANY)* }
+
+section_name = @{ (!"]" ~ ANY)+ }
+
+header_line  =  { "[" ~ ws ~ section_name ~ ws ~ "]" ~ eol }
+kv_line      =  { ident ~ ws ~ "=" ~ ws ~ value ~ eol }
+// comment_line and blank_line require a newline to avoid zero-width match at EOI
+// (which would cause infinite looping in line*). The final line is handled by
+// the trailing `ws ~ comment? ~ EOI` in the ini rule.
+comment_line = _{ ws ~ comment ~ newline }
+blank_line   = _{ ws ~ newline }
+line         = _{ header_line | kv_line | comment_line | blank_line }
+
+ini          =  { line* ~ ws ~ comment? ~ EOI }
