@@ -27,7 +27,6 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use futures::StreamExt;
 use reqwest::Client;
 use serde_json::Value;
 use std::{
@@ -91,7 +90,8 @@ fn json_response(status: StatusCode, body: String) -> Response {
         .status(status)
         .header("content-type", "application/json")
         .body(Body::from(body))
-        .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "").into_response())
+        // Static status + const header name → builder cannot fail.
+        .expect("static response parts are always valid")
 }
 
 pub(crate) fn json_error(status: StatusCode, msg: &str) -> Response {
@@ -497,18 +497,8 @@ pub(crate) async fn proxy_handler(State(state): State<AppState>, req: Request) -
 
     let url = format!("{}{}", state.backend_url, forward_path);
 
-    // 1. Enforce body size limit for all methods before buffering.
-    let size_hint = parts
-        .headers
-        .get("content-length")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(0);
-
-    if size_hint > state.max_body_bytes {
-        return json_error(StatusCode::PAYLOAD_TOO_LARGE, "Request body too large");
-    }
-
+    // Enforce the body size limit: to_bytes caps buffering at max_body_bytes and
+    // errors past it, so it bounds memory regardless of a lying Content-Length.
     let bytes = match axum::body::to_bytes(body, state.max_body_bytes).await {
         Ok(b) => b,
         Err(_) => return json_error(StatusCode::BAD_REQUEST, "Failed to read request body"),
@@ -561,10 +551,9 @@ pub(crate) async fn proxy_handler(State(state): State<AppState>, req: Request) -
                 }
             }
 
-            let stream = res
-                .bytes_stream()
-                .map(|result| result.map_err(std::io::Error::other));
-            let body = Body::from_stream(stream);
+            // reqwest::Error already satisfies Body::from_stream's
+            // Into<BoxError> bound, so the stream needs no error remapping.
+            let body = Body::from_stream(res.bytes_stream());
             match response_builder.body(body) {
                 Ok(resp) => resp,
                 Err(e) => {
