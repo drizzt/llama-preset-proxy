@@ -23,7 +23,7 @@ use crate::preset::{Preset, presets_from_models_json};
 use axum::{
     body::{Body, Bytes},
     extract::{Request, State},
-    http::{Method, StatusCode},
+    http::{HeaderMap, Method, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -55,9 +55,15 @@ pub(crate) struct AppState {
     pub(crate) last_probe: Arc<AsyncMutex<()>>,
     /// Backend API base URL including the `/v1` (or equivalent) path component,
     /// e.g. `http://127.0.0.1:8080/v1` or `https://api.example.com/v1`.
-    /// The proxy only routes `/v1/*` requests and strips the `/v1` prefix
-    /// before appending the remaining path to this URL.
+    /// The `/v1`-injected route strips the `/v1` prefix before appending the
+    /// remaining path to this URL.
     pub(crate) backend_url: String,
+    /// The backend origin with the `/v1` API suffix removed, e.g.
+    /// `http://127.0.0.1:8080`. Every non-`/v1` request (web UI assets, native
+    /// llama.cpp endpoints like `/props` and `/slots`) is reverse-proxied here
+    /// verbatim by [`web_passthrough_handler`], so the web UI works on the proxy
+    /// port without bypassing preset injection on the API path.
+    pub(crate) backend_root: String,
     /// How long a tracker entry is considered fresh before re-querying the backend.
     /// A value of [`Duration::ZERO`] disables the cache entirely (every request
     /// queries `/v1/models`), which is correct but expensive.
@@ -96,6 +102,15 @@ fn json_response(status: StatusCode, body: String) -> Response {
 
 pub(crate) fn json_error(status: StatusCode, msg: &str) -> Response {
     json_response(status, serde_json::json!({"error": msg}).to_string())
+}
+
+/// Derive the backend origin (used for non-`/v1` web-UI passthrough) from the
+/// API base URL by stripping a trailing `/v1` or `/v1/` suffix.
+pub(crate) fn backend_root_of(backend_url: &str) -> &str {
+    backend_url
+        .strip_suffix("/v1")
+        .or_else(|| backend_url.strip_suffix("/v1/"))
+        .unwrap_or(backend_url)
 }
 
 /// Acquire a read lock, recovering the guard if the lock was poisoned by a
@@ -512,9 +527,68 @@ pub(crate) async fn proxy_handler(State(state): State<AppState>, req: Request) -
         (bytes, None)
     };
 
-    // 3. Build and send backend request, forwarding safe headers.
-    let mut proxy_req = state.client.request(method, &url);
-    for (k, v) in parts.headers.iter() {
+    // 3. Build, send, and stream the backend response (shared with the web UI
+    //    passthrough path).
+    send_to_backend(
+        &state,
+        method,
+        &url,
+        &parts.headers,
+        body_bytes,
+        &path_and_query,
+        pending_active_alias,
+    )
+    .await
+}
+
+/// Reverse-proxy any non-`/v1` request to the backend root verbatim. This is the
+/// router fallback: web UI static assets (`/`, `/index.html`, JS/CSS) and native
+/// llama.cpp endpoints (`/props`, `/slots`, `/completion`) all forward here, so
+/// the web UI loads on the proxy port. Always passthrough — no preset injection,
+/// no `/v1` stripping, and no traversal check (forwarding every path to the one
+/// configured backend is the intent, so there is no `/v1` contract to escape).
+pub(crate) async fn web_passthrough_handler(State(state): State<AppState>, req: Request) -> Response {
+    let (parts, body) = req.into_parts();
+    let method = parts.method.clone();
+    let path_and_query = parts
+        .uri
+        .path_and_query()
+        .map(|pq| pq.as_str().to_string())
+        .unwrap_or_else(|| "/".to_string());
+
+    let url = format!("{}{}", state.backend_root, path_and_query);
+
+    let bytes = match axum::body::to_bytes(body, state.max_body_bytes).await {
+        Ok(b) => b,
+        Err(_) => return json_error(StatusCode::BAD_REQUEST, "Failed to read request body"),
+    };
+
+    send_to_backend(
+        &state,
+        method,
+        &url,
+        &parts.headers,
+        bytes,
+        &path_and_query,
+        None,
+    )
+    .await
+}
+
+/// Build the backend request (forwarding safe headers), send it, and stream the
+/// response back to the client. When `pending_active_alias` is set, record it as
+/// the active alias only if the backend returned success.
+async fn send_to_backend(
+    state: &AppState,
+    method: Method,
+    url: &str,
+    headers: &HeaderMap,
+    body_bytes: Bytes,
+    path_and_query: &str,
+    pending_active_alias: Option<(String, String)>,
+) -> Response {
+    let mut proxy_req = state.client.request(method, url);
+    for (k, v) in headers.iter() {
         if !is_skip_header(k.as_str()) {
             proxy_req = proxy_req.header(k.clone(), v.clone());
         }
@@ -524,13 +598,13 @@ pub(crate) async fn proxy_handler(State(state): State<AppState>, req: Request) -
     // `is_skip_header` so it can't conflict with the (possibly rewritten) body.
     proxy_req = proxy_req.body(body_bytes);
 
-    // 4. Stream response back to the client.
+    // Stream response back to the client.
     match proxy_req.send().await {
         Ok(res) => {
             let status = res.status();
             if let Some((model_id, alias)) = &pending_active_alias {
                 if status.is_success() {
-                    record_active_alias(&state, model_id, alias);
+                    record_active_alias(state, model_id, alias);
                 } else {
                     debug!(
                         "POST {path_and_query}: backend returned {status}, \
@@ -571,7 +645,10 @@ pub(crate) async fn proxy_handler(State(state): State<AppState>, req: Request) -
 
 #[cfg(test)]
 mod tests {
-    use super::{AppState, find_active_alias, healthz, proxy_handler, readyz, version};
+    use super::{
+        AppState, backend_root_of, find_active_alias, healthz, proxy_handler, readyz, version,
+        web_passthrough_handler,
+    };
     use crate::preset::Preset;
     use axum::{Router, body::Body, http::Request, http::StatusCode, routing::any};
     use serde_json::{Map, Value, json};
@@ -613,6 +690,7 @@ mod tests {
             tracker: Arc::new(RwLock::new(HashMap::new())),
             last_probe: Arc::new(AsyncMutex::new(())),
             backend_url: backend_url.to_string(),
+            backend_root: backend_root_of(backend_url).to_string(),
             cache_ttl: Duration::ZERO,
             max_body_bytes: 1024,
             client: reqwest::Client::new(),
@@ -622,6 +700,7 @@ mod tests {
     fn test_app() -> Router {
         Router::new()
             .route("/v1/{*path}", any(proxy_handler))
+            .fallback(web_passthrough_handler)
             .with_state(test_state("http://127.0.0.1:1/v1", HashMap::new()))
     }
 
@@ -664,8 +743,12 @@ mod tests {
 
     // -- routing -------------------------------------------------------------
 
+    // Non-`/v1` paths fall through to the web UI passthrough, which forwards to
+    // the backend root. Against the dead test backend (port 1) that surfaces as
+    // 502, NOT 404 — the request was routed and forwarded, not rejected.
+
     #[tokio::test]
-    async fn route_v2_returns_404() {
+    async fn route_v2_forwarded_to_backend() {
         let resp = test_app()
             .oneshot(
                 Request::builder()
@@ -675,11 +758,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
     }
 
     #[tokio::test]
-    async fn route_health_returns_404() {
+    async fn route_health_forwarded_to_backend() {
         let resp = test_app()
             .oneshot(
                 Request::builder()
@@ -689,26 +772,28 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
     }
 
     #[tokio::test]
-    async fn route_root_returns_404() {
+    async fn route_root_forwarded_to_backend() {
         let resp = test_app()
             .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
     }
 
     #[tokio::test]
-    async fn route_v1_bare_returns_404() {
-        // "/v1" without a trailing path segment does not match "/v1/*path".
+    async fn route_v1_bare_forwarded_to_backend() {
+        // "/v1" without a trailing path segment does not match "/v1/*path", so it
+        // falls through to the passthrough and is forwarded to the backend root
+        // (502 against the dead port, not 404).
         let resp = test_app()
             .oneshot(Request::builder().uri("/v1").body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
     }
 
     #[tokio::test]
@@ -1021,5 +1106,31 @@ mod tests {
             json!(0.6),
             "freshly-probed preset params injected"
         );
+    }
+
+    #[tokio::test]
+    async fn web_ui_root_forwarded_to_backend_root() {
+        // A GET for "/" does not match "/v1/*path"; the fallback must forward it
+        // to the backend root (backend_url minus "/v1") and stream the response
+        // body back unchanged — this is what makes the web UI load on the proxy port.
+        let backend = Router::new().route("/", axum::routing::get(|| async { "web-ui-index" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, backend).await.unwrap() });
+
+        let app = Router::new()
+            .route("/v1/{*path}", any(proxy_handler))
+            .fallback(web_passthrough_handler)
+            .with_state(test_state(&format!("http://{addr}/v1"), HashMap::new()));
+
+        let resp = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&bytes[..], b"web-ui-index");
     }
 }

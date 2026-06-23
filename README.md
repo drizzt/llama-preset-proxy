@@ -76,6 +76,11 @@ llama-preset-proxy --backend-url https://api.example.com/v1 --verbose
 
 Point your OpenAI-compatible client at `http://127.0.0.1:8081/v1`.
 
+The proxy also serves the `llama-server` **web UI** on its own port: any request that is not
+under `/v1` (the UI's static assets, plus native endpoints like `/props`, `/slots`,
+`/completion`) is reverse-proxied to the backend root. Open `http://127.0.0.1:8081/` in a browser
+and the UI's API calls flow through the proxy, so preset injection still applies.
+
 ## Preset format
 
 Preset data is sourced from the `status.preset` field that `llama-server` exposes in its
@@ -151,7 +156,10 @@ These INI keys are injected into the request body if the client did not already 
    - Otherwise → forward as-is and record this alias as the new active one
      only if the upstream request succeeds.
 
-4. **All other requests** (GET, DELETE, etc.) are forwarded unchanged.
+4. **All other `/v1` requests** (GET, DELETE, etc.) are forwarded unchanged.
+
+5. **Non-`/v1` requests** (web UI assets, native llama.cpp endpoints) are forwarded verbatim to
+   the backend root — no interception, no injection.
 
 ## Health & observability
 
@@ -221,6 +229,10 @@ llama-preset-proxy.service`.
 - **Localhost by default.** Binds to `127.0.0.1`. Using `--listen-host 0.0.0.0` exposes the
   proxy to the network: any client can reach the backend through it, and there is no
   authentication. Do not use this without a firewall.
+- **Full backend surface.** Because non-`/v1` paths are forwarded to the backend root (to serve
+  the web UI), the proxy exposes the backend's entire surface (`/slots`, `/props`, etc.) — the
+  same as exposing `llama-server` directly. Keep the default loopback bind, or front the proxy
+  with a reverse proxy that restricts paths, if that surface must not be reachable.
 - **TLS.** The proxy→backend connection supports HTTPS via `--backend-url https://...` (backed
   by the system's native TLS). The client→proxy connection is always plain HTTP; place a
   TLS-terminating reverse proxy (nginx, Caddy, etc.) in front if the proxy itself must be

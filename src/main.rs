@@ -16,7 +16,8 @@ use axum::{
 use clap::Parser;
 use preset::{Preset, presets_from_models_json};
 use proxy::{
-    AppState, fetch_models_data, healthz, load_shed, proxy_handler, readyz, version, write_recover,
+    AppState, backend_root_of, fetch_models_data, healthz, load_shed, proxy_handler, readyz,
+    version, web_passthrough_handler, write_recover,
 };
 use reqwest::Client;
 use std::{
@@ -224,6 +225,9 @@ async fn main() {
         tracker,
         last_probe: Arc::new(AsyncMutex::new(())),
         backend_url: backend_url.clone(),
+        // Backend origin without the `/v1` API suffix: every non-`/v1` request
+        // (web UI assets, native llama.cpp endpoints) is reverse-proxied here.
+        backend_root: backend_root_of(&backend_url).to_string(),
         cache_ttl: Duration::from_secs(args.cache_ttl_secs),
         max_body_bytes: args.max_body_mb.saturating_mul(1024 * 1024),
         client,
@@ -267,7 +271,14 @@ async fn main() {
     // is rejected with 503 instead of queueing unboundedly behind a stalled
     // backend. The health/version routes are added *after* this layer so they
     // stay exempt — liveness/readiness must answer even under overload.
-    let proxy_routes = Router::new().route("/v1/{*path}", any(proxy_handler));
+    // The fallback reverse-proxies every non-`/v1` path to the backend root so
+    // the llama.cpp web UI (and native endpoints) load on the proxy port. It is
+    // attached here, before the load-shed layer, so it inherits the concurrency
+    // limit; the explicit health/version routes added afterwards still match
+    // first and stay exempt.
+    let proxy_routes = Router::new()
+        .route("/v1/{*path}", any(proxy_handler))
+        .fallback(web_passthrough_handler);
     let proxy_routes = if args.max_concurrent > 0 {
         let permits = Arc::new(Semaphore::new(args.max_concurrent));
         proxy_routes.layer(from_fn_with_state(permits, load_shed))
