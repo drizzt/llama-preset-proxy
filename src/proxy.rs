@@ -547,7 +547,10 @@ pub(crate) async fn proxy_handler(State(state): State<AppState>, req: Request) -
 /// the web UI loads on the proxy port. Always passthrough — no preset injection,
 /// no `/v1` stripping, and no traversal check (forwarding every path to the one
 /// configured backend is the intent, so there is no `/v1` contract to escape).
-pub(crate) async fn web_passthrough_handler(State(state): State<AppState>, req: Request) -> Response {
+pub(crate) async fn web_passthrough_handler(
+    State(state): State<AppState>,
+    req: Request,
+) -> Response {
     let (parts, body) = req.into_parts();
     let method = parts.method.clone();
     let path_and_query = parts
