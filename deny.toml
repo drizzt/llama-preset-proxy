@@ -30,7 +30,6 @@ allow = [
     "CDLA-Permissive-2.0",
     "ISC",
     "LGPL-2.1-or-later",
-    "OpenSSL",
     "Unicode-3.0",
     "Unlicense",
 ]
