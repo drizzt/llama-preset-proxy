@@ -106,7 +106,7 @@ These INI keys are injected into the request body if the client did not already 
 
 | INI key | JSON body key |
 |---------|---------------|
-| `temp` | `temperature` |
+| `temp`, `temperature` | `temperature` |
 | `top-k` | `top_k` |
 | `top-p` | `top_p` |
 | `min-p` | `min_p` |
@@ -114,18 +114,18 @@ These INI keys are injected into the request body if the client did not already 
 | `presence-penalty` | `presence_penalty` |
 | `frequency-penalty` | `frequency_penalty` |
 | `repeat-last-n` | `repeat_last_n` |
-| `top-nsigma` | `top_n_sigma` |
+| `top-nsigma`, `top-n-sigma` | `top_n_sigma` |
 | `xtc-probability` | `xtc_probability` |
 | `xtc-threshold` | `xtc_threshold` |
-| `typical` | `typical_p` |
+| `typical`, `typical-p` | `typical_p` |
 | `dry-multiplier` | `dry_multiplier` |
 | `dry-base` | `dry_base` |
 | `dry-allowed-length` | `dry_allowed_length` |
 | `dry-penalty-last-n` | `dry_penalty_last_n` |
 | `mirostat` | `mirostat` |
-| `mirostat-tau` | `mirostat_tau` |
-| `mirostat-eta` | `mirostat_eta` |
-| `seed` | `seed` |
+| `mirostat-ent` | `mirostat_tau` |
+| `mirostat-lr` | `mirostat_eta` |
+| `s`, `seed` | `seed` |
 
 ### Special keys
 

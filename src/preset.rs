@@ -28,7 +28,7 @@ fn get_canonical_model_id_key(k: &str) -> Option<&'static str> {
 
 fn get_sparam_json_key(k: &str) -> Option<&'static str> {
     match k {
-        "temp" => Some("temperature"),
+        "temp" | "temperature" => Some("temperature"),
         "top-k" => Some("top_k"),
         "top-p" => Some("top_p"),
         "min-p" => Some("min_p"),
@@ -36,18 +36,18 @@ fn get_sparam_json_key(k: &str) -> Option<&'static str> {
         "presence-penalty" => Some("presence_penalty"),
         "frequency-penalty" => Some("frequency_penalty"),
         "repeat-last-n" => Some("repeat_last_n"),
-        "top-nsigma" => Some("top_n_sigma"),
+        "top-nsigma" | "top-n-sigma" => Some("top_n_sigma"),
         "xtc-probability" => Some("xtc_probability"),
         "xtc-threshold" => Some("xtc_threshold"),
-        "typical" => Some("typical_p"),
+        "typical" | "typical-p" => Some("typical_p"),
         "dry-multiplier" => Some("dry_multiplier"),
         "dry-base" => Some("dry_base"),
         "dry-allowed-length" => Some("dry_allowed_length"),
         "dry-penalty-last-n" => Some("dry_penalty_last_n"),
         "mirostat" => Some("mirostat"),
-        "mirostat-tau" => Some("mirostat_tau"),
-        "mirostat-eta" => Some("mirostat_eta"),
-        "seed" => Some("seed"),
+        "mirostat-ent" => Some("mirostat_tau"),
+        "mirostat-lr" => Some("mirostat_eta"),
+        "s" | "seed" => Some("seed"),
         _ => None,
     }
 }
@@ -58,6 +58,25 @@ fn is_truthy(v: &str) -> bool {
 
 fn is_autoy(v: &str) -> bool {
     matches!(v.to_lowercase().as_str(), "auto" | "-1")
+}
+
+/// Key naming the option an INI key sets, so aliases (`temp`/`temperature`) compare equal.
+fn option_key(k: &str) -> &str {
+    get_canonical_model_id_key(k)
+        .or_else(|| get_sparam_json_key(k))
+        .unwrap_or(k)
+}
+
+/// Keep one key per option, as llama.cpp does: it assigns a section's keys to
+/// options in sorted key order, so when two aliases of one option are present
+/// the bytewise-last one wins. Returns option -> (original key, value).
+fn by_option(kv: HashMap<String, String>) -> HashMap<String, (String, String)> {
+    let mut pairs: Vec<(String, String)> = kv.into_iter().collect();
+    pairs.sort();
+    pairs
+        .into_iter()
+        .map(|(k, v)| (option_key(&k).to_string(), (k, v)))
+        .collect()
 }
 
 fn compute_model_id(kv: &HashMap<String, String>) -> String {
@@ -168,7 +187,7 @@ pub(crate) fn presets_from_models_json(data: &[Value]) -> HashMap<String, Preset
 pub(crate) fn build_presets_from_sections(
     mut sections: HashMap<String, HashMap<String, String>>,
 ) -> HashMap<String, Preset> {
-    let global_kv = sections.remove("*").unwrap_or_default();
+    let global_kv = by_option(sections.remove("*").unwrap_or_default());
 
     let mut presets = HashMap::new();
     for (name, kv) in sections {
@@ -176,8 +195,11 @@ pub(crate) fn build_presets_from_sections(
         if name.is_empty() || name.eq_ignore_ascii_case("default") {
             continue;
         }
-        let mut merged = global_kv.clone();
-        merged.extend(kv);
+        // Merge per option, not per key: a section's `temp` must override a
+        // global `temperature`, like llama.cpp's preset cascade.
+        let mut by_opt = global_kv.clone();
+        by_opt.extend(by_option(kv));
+        let merged: HashMap<String, String> = by_opt.into_values().collect();
 
         let model_id = compute_model_id(&merged);
         let mut params = Map::new();
@@ -489,6 +511,56 @@ mod tests {
         let s = sections(&[("alias", &[("hf-repo", "org/model:Q4_K_M")])]);
         let p = build_presets_from_sections(s);
         assert_eq!(p["alias"].model_id, "hf-repo=org/model:Q4_K_M");
+    }
+
+    #[test]
+    fn build_temperature_long_form_injected() {
+        // The router re-serialises `temp` as `temperature` in status.preset.
+        let s = sections(&[("alias", &[("temperature", "0.7")])]);
+        let p = build_presets_from_sections(s);
+        assert_eq!(p["alias"].params["temperature"], json!(0.7));
+    }
+
+    #[test]
+    fn build_router_long_form_keys_injected() {
+        // status.preset uses each option's last CLI name.
+        let s = sections(&[(
+            "alias",
+            &[
+                ("top-n-sigma", "1.5"),
+                ("typical-p", "0.9"),
+                ("mirostat-ent", "5.0"),
+                ("mirostat-lr", "0.1"),
+                ("seed", "42"),
+            ],
+        )]);
+        let p = &build_presets_from_sections(s)["alias"].params;
+        assert_eq!(p["top_n_sigma"], json!(1.5));
+        assert_eq!(p["typical_p"], json!(0.9));
+        assert_eq!(p["mirostat_tau"], json!(5.0));
+        assert_eq!(p["mirostat_eta"], json!(0.1));
+        assert_eq!(p["seed"], json!(42));
+    }
+
+    #[test]
+    fn build_alias_conflict_last_sorted_key_wins() {
+        // llama.cpp applies keys in sorted order: "temperature" > "temp".
+        for _ in 0..16 {
+            let s = sections(&[("alias", &[("temp", "0.1"), ("temperature", "0.7")])]);
+            let p = build_presets_from_sections(s);
+            assert_eq!(p["alias"].params["temperature"], json!(0.7));
+        }
+    }
+
+    #[test]
+    fn build_section_alias_overrides_global_alias() {
+        let s = sections(&[
+            ("*", &[("temperature", "0.1"), ("model", "global.gguf")]),
+            ("alias", &[("temp", "0.7"), ("m", "local.gguf")]),
+        ]);
+        let p = build_presets_from_sections(s);
+        assert_eq!(p["alias"].params["temperature"], json!(0.7));
+        assert_eq!(p["alias"].model_id, "model=local.gguf");
     }
 
     #[test]
